@@ -1,7 +1,7 @@
 (()=>{
 
 const CONFIG={
-  version:"2026.09.04.4",
+  version:"2026.09.04.8",
   timings:{
     timeout:5000,
     interval:50,
@@ -526,6 +526,25 @@ function handleTreeKeys(e){
 function handleObsKeys(e){
   if(e.altKey || e.ctrlKey || e.shiftKey || e.metaKey)return false;
 
+  if(e.key==="Enter"){
+    const {active,index}=getObsState();
+
+    if(index===-1)return false;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    const checkboxContainer=active.closest("div[onclick]");
+
+    if(!checkboxContainer){
+      showNotice("Could not find clickable Obs-list container","error");
+      return true;
+    }
+
+    checkboxContainer.click();
+    return true;
+  }
+
   if(e.key==="ArrowDown"){
     if(!moveObsFocus(1))return false;
 
@@ -985,7 +1004,17 @@ function toggleShortcutHelp(){
     const action=document.createElement("td");
 
     keys.textContent=helpShortcut;
-    action.textContent=description;
+
+    if(binding.italicPrefix && description.startsWith(binding.italicPrefix)){
+      const emphasis=document.createElement("em");
+      emphasis.textContent=binding.italicPrefix;
+      action.append(
+        emphasis,
+        description.slice(binding.italicPrefix.length)
+      );
+    }else{
+      action.textContent=description;
+    }
 
     Object.assign(keys.style,{
       padding:subordinate
@@ -1052,6 +1081,7 @@ const bindings=[
     shift:false,
     shortcut:"Alt+T",
     title:"Tag prøve på OBS liste med dine initialer",
+    italicPrefix:"Tag",
     subordinate:true,
     run:setMatOnCurrentObsRow
   },
@@ -1059,7 +1089,7 @@ const bindings=[
     key:"t",
     shift:true,
     shortcut:"Shift+Alt+T",
-    title:"Skift initialer til OBS liste",
+    title:"Skift gemte initialer til OBS liste",
     subordinate:true,
     run:changeObsInitials
   },
@@ -1075,14 +1105,14 @@ const bindings=[
     key:"p",
     shift:false,
     shortcut:"Alt+P",
-    title:"Patientfane",
+    title:"Find patient fane",
     run:()=>activateLeftTab(S.tabPatient,null,"Patient tab")
   },
   {
     key:"a",
     shift:false,
     shortcut:"Alt+A",
-    title:"Aktive patienter",
+    title:"Egen patientliste (dagens patienter)",
     subordinate:true,
     run:focusActivePatients
   },
@@ -1091,14 +1121,14 @@ const bindings=[
     shift:false,
     shortcut:"Alt+J",
     helpShortcut:"Alt+J / Alt+N",
-    title:"Notater",
+    title:"EPN fane",
     run:openEpjTree
   },
   {
     key:"n",
     shift:false,
     shortcut:"Alt+N",
-    title:"Notater",
+    title:"EPN fane",
     showInHelp:false,
     run:openEpjTree
   },
@@ -1130,7 +1160,7 @@ const bindings=[
     key:"s",
     shift:false,
     shortcut:"Alt+S",
-    title:"Svar",
+    title:"Vis labsvar fane",
     run:openSvar
   },
   {
