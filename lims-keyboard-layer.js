@@ -1,11 +1,12 @@
 (()=>{
 
 const CONFIG={
-  version:"2026.09.04.8",
+  version:"2026.09.04.18",
   timings:{
     timeout:5000,
     interval:50,
-    notice:6000
+    notice:6000,
+    formInput:100
   },
   selectors:{
     tabPatient:"td#tabPatient",
@@ -14,6 +15,7 @@ const CONFIG={
 
     epjButton:"input.epjbutton",
     obsList:"input#button.obslist",
+    contextText:"body > b > span",
     problemRow:"body form table tr table tr#dt-0",
     problemRows:'body form table tr table tr[id^="dt-"]',
     newNote:'input.Button[value="Nyt notat"]',
@@ -29,13 +31,18 @@ const CONFIG={
 
     epjNote:"div#note.noteDiv",
     richFrame:"iframe#richFrame",
+    noteSign:"input#sign",
+    noteOkActive:"#OKACTIVE",
+    greenApproval:"input#K1OK",
+    greenSign:"input#K1SIGN",
     status:"#STATUS",
     formType:"#SCH",
     formOk:"#OK",
     newFormLabel:"table div"
   },
   frames:{
-    epjPanel:"EPJpanel"
+    epjPanel:"EPJpanel",
+    context:"Context"
   },
   labels:{
     forms:"Skemaer",
@@ -188,6 +195,57 @@ function showNotice(message,tone="error"){
   notice.__limsTimer=setTimeout(()=>{
     notice.remove();
   },CONFIG.timings.notice);
+}
+
+async function writeClipboardText(text,doc){
+  try{
+    if(!window.navigator.clipboard?.writeText){
+      throw new Error("Clipboard API unavailable");
+    }
+
+    await window.navigator.clipboard.writeText(text);
+    return;
+  }catch(clipboardError){
+    const area=doc.createElement("textarea");
+    area.value=text;
+    area.setAttribute("readonly","");
+    Object.assign(area.style,{
+      position:"fixed",
+      left:"-9999px",
+      opacity:"0"
+    });
+    doc.body.appendChild(area);
+    area.select();
+
+    const copied=doc.execCommand("copy");
+    area.remove();
+
+    if(!copied){
+      throw clipboardError;
+    }
+  }
+}
+
+async function copyContextText(){
+  const frame=findFrame(
+    window,
+    candidate=>candidate.id===CONFIG.frames.context
+  );
+  const doc=frame?.contentDocument;
+  const element=doc?.querySelector(S.contextText);
+
+  if(!element){
+    throw new Error("Could not find Context text");
+  }
+
+  const text=(element.textContent||"").replace(/\u00a0+$/,"");
+
+  if(!text){
+    throw new Error("Context text is empty");
+  }
+
+  await writeClipboardText(text,doc);
+  showNotice("CPR-nummer kopieret","success");
 }
 
 async function activateLeftTab(tabSelector,ready,description){
@@ -789,6 +847,121 @@ async function setMatOnCurrentObsRow(){
   focusObsCheckbox(checkbox);
 }
 
+function isRichFrameContext(e){
+  try{
+    return e.currentTarget?.frameElement?.matches(S.richFrame)===true;
+  }catch{
+    return false;
+  }
+}
+
+function isGreenFormContext(e){
+  try{
+    const win=e.currentTarget;
+    const doc=win?.document;
+
+    return (
+      win?.frameElement?.id===CONFIG.frames.epjPanel &&
+      !!(
+        doc?.querySelector(S.greenApproval) ||
+        doc?.querySelector(S.greenSign)
+      )
+    );
+  }catch{
+    return false;
+  }
+}
+
+function fillInitialsField(field){
+  const doc=field.ownerDocument;
+  const win=doc.defaultView;
+  const initials=getObsInitials();
+  const valueSetter=Object.getOwnPropertyDescriptor(
+    win.HTMLInputElement.prototype,
+    "value"
+  )?.set;
+
+  field.focus();
+
+  if(valueSetter){
+    valueSetter.call(field,initials);
+  }else{
+    field.value=initials;
+  }
+
+  const EventConstructor=win.Event;
+  field.dispatchEvent(new EventConstructor("input",{bubbles:true}));
+  field.dispatchEvent(new EventConstructor("keyup",{bubbles:true}));
+  field.dispatchEvent(new EventConstructor("change",{bubbles:true}));
+  field.blur();
+}
+
+async function signActiveNote(e){
+  const richFrame=e.currentTarget?.frameElement;
+  const epjDoc=richFrame?.ownerDocument;
+  const sign=epjDoc?.querySelector(S.noteSign);
+
+  if(!sign){
+    throw new Error("Could not find note signature field #sign");
+  }
+
+  fillInitialsField(sign);
+
+  await new Promise(resolve=>setTimeout(
+    resolve,
+    CONFIG.timings.formInput
+  ));
+
+  const ok=await waitUntil(()=>{
+    const control=epjDoc.querySelector(S.noteOkActive);
+    return control&&!control.disabled ? control : null;
+  },"enabled note button #OKACTIVE");
+
+  ok.click();
+}
+
+async function completeGreenForm(e){
+  const epjWin=e.currentTarget;
+  const approval=epjWin.document.querySelector(S.greenApproval);
+
+  if(!approval){
+    throw new Error("Could not find green-form checkbox #K1OK");
+  }
+
+  if(approval.disabled){
+    throw new Error("Green-form checkbox #K1OK is disabled");
+  }
+
+  if(!approval.checked){
+    approval.click();
+  }
+
+  const sign=await waitUntil(()=>{
+    const field=epjWin.document.querySelector(S.greenSign);
+    return field&&!field.disabled&&!field.readOnly ? field : null;
+  },"enabled green-form signature field #K1SIGN");
+
+  fillInitialsField(sign);
+
+  await new Promise(resolve=>setTimeout(
+    resolve,
+    CONFIG.timings.formInput
+  ));
+
+  const ok=await waitUntil(()=>{
+    const control=epjWin.document.querySelector(S.formOk);
+    return control&&!control.disabled ? control : null;
+  },"enabled green-form button #OK");
+
+  ok.click();
+}
+
+function runAltT(e){
+  if(isRichFrameContext(e))return signActiveNote(e);
+  if(isGreenFormContext(e))return completeGreenForm(e);
+  return setMatOnCurrentObsRow();
+}
+
 async function removeMarkedObs(){
   const {doc,checkboxes}=getObsState();
   const button=doc?.querySelector(S.removeMarked);
@@ -848,6 +1021,8 @@ async function openNewNote(){
   const {rich,doc,body}=await waitForRichFrame(epj);
   const win=rich.contentWindow;
   const html=doc.documentElement;
+
+  installIn(win,true);
 
   epj.focus();
   epj.contentWindow.focus();
@@ -1005,7 +1180,23 @@ function toggleShortcutHelp(){
 
     keys.textContent=helpShortcut;
 
-    if(binding.italicPrefix && description.startsWith(binding.italicPrefix)){
+    const inlineItalicText=binding.inlineItalicText;
+    const inlineItalicIndex=inlineItalicText
+      ? description.indexOf(inlineItalicText)
+      : -1;
+
+    if(inlineItalicIndex>=0){
+      const emphasis=document.createElement("em");
+      emphasis.textContent=inlineItalicText;
+      action.append(
+        description.slice(0,inlineItalicIndex),
+        emphasis,
+        description.slice(inlineItalicIndex+inlineItalicText.length)
+      );
+    }else if(
+      binding.italicPrefix &&
+      description.startsWith(binding.italicPrefix)
+    ){
       const emphasis=document.createElement("em");
       emphasis.textContent=binding.italicPrefix;
       action.append(
@@ -1083,7 +1274,12 @@ const bindings=[
     title:"Tag prøve på OBS liste med dine initialer",
     italicPrefix:"Tag",
     subordinate:true,
-    run:setMatOnCurrentObsRow
+    getErrorTitle:e=>{
+      if(isRichFrameContext(e))return "Signér nyt notat";
+      if(isGreenFormContext(e))return "Godkend grønt skema";
+      return "Tag prøve på OBS liste med dine initialer";
+    },
+    run:runAltT
   },
   {
     key:"t",
@@ -1149,6 +1345,13 @@ const bindings=[
     run:createGreenForm
   },
   {
+    helpOnly:true,
+    shortcut:"Alt+T",
+    title:"Signer (Tag) notat/skema",
+    inlineItalicText:"Tag",
+    subordinate:true
+  },
+  {
     key:"l",
     shift:false,
     shortcut:"Alt+L",
@@ -1172,6 +1375,13 @@ const bindings=[
     run:openMiba
   },
   {
+    key:"k",
+    shift:false,
+    shortcut:"Alt+K",
+    title:"Kopiér CPR-nummer",
+    run:copyContextText
+  },
+  {
     key:"h",
     shift:false,
     shortcut:"Alt+H",
@@ -1186,6 +1396,7 @@ function findBinding(e){
   const key=e.key.toLowerCase();
 
   return bindings.find(binding=>(
+    !binding.helpOnly &&
     binding.key===key &&
     binding.shift===e.shiftKey
   )) || null;
@@ -1198,11 +1409,13 @@ async function limsShortcut(e){
   e.preventDefault();
   e.stopImmediatePropagation();
 
+  const errorTitle=binding.getErrorTitle?.(e) || binding.title;
+
   try{
-    await binding.run();
+    await binding.run(e);
   }catch(err){
     const detail=err?.message || String(err);
-    const message=`${binding.shortcut} ${binding.title}: ${detail}`;
+    const message=`${binding.shortcut} ${errorTitle}: ${detail}`;
 
     console.error("LIMS shortcut failed:",err);
     showNotice(message,"error");
@@ -1237,10 +1450,14 @@ function handleHelpKeys(e){
   closeShortcutHelp();
 }
 
-function installIn(win){
+function installIn(win,force=false){
   const existing=win[INSTALL_KEY];
 
-  if(existing?.version===CONFIG.version)return;
+  if(
+    !force &&
+    existing?.version===CONFIG.version &&
+    existing.document===win.document
+  )return;
 
   if(typeof existing?.uninstall==="function"){
     existing.uninstall();
@@ -1270,7 +1487,7 @@ function installIn(win){
 
     const onLoad=()=>{
       try{
-        installIn(frame.contentWindow);
+        installIn(frame.contentWindow,true);
       }catch(err){
         console.warn("Could not install LIMS shortcuts in frame:",err);
       }
@@ -1331,7 +1548,10 @@ function installIn(win){
 
   win[INSTALL_KEY]={
     version:CONFIG.version,
-    shortcuts:bindings.map(({shortcut,title})=>({shortcut,title})),
+    document:win.document,
+    shortcuts:bindings
+      .filter(binding=>!binding.helpOnly)
+      .map(({shortcut,title})=>({shortcut,title})),
     uninstall
   };
   win.__limsKeyboardLayerInstalled=CONFIG.version;
