@@ -1,0 +1,1330 @@
+(()=>{
+
+const CONFIG={
+  version:"2026.09.04.4",
+  timings:{
+    timeout:5000,
+    interval:50,
+    notice:6000
+  },
+  selectors:{
+    tabPatient:"td#tabPatient",
+    tabEpj:"td#tabEpj",
+    tabSvar:"td#tabSvar",
+
+    epjButton:"input.epjbutton",
+    obsList:"input#button.obslist",
+    problemRow:"body form table tr table tr#dt-0",
+    problemRows:'body form table tr table tr[id^="dt-"]',
+    newNote:'input.Button[value="Nyt notat"]',
+    activePatients:"select#ASKPOOL",
+
+    treeLab:"input.TreeLab",
+    treeAll:"input.TreeAll",
+    treeItem:"td.TreeUrl",
+    treeParent:"td.TreeParent",
+
+    obsCheckbox:'form table tr table tr input[type="checkbox"]',
+    removeMarked:'input[value="Fjern markerede"]',
+
+    epjNote:"div#note.noteDiv",
+    richFrame:"iframe#richFrame",
+    status:"#STATUS",
+    formType:"#SCH",
+    formOk:"#OK",
+    newFormLabel:"table div"
+  },
+  frames:{
+    epjPanel:"EPJpanel"
+  },
+  labels:{
+    forms:"Skemaer",
+    newForm:"Nyt skema",
+    newNote:"Nyt notat",
+    greenForm:"Grønt skema",
+    removeMarked:"Fjern markerede"
+  },
+  values:{
+    defaultObsInitials:"MAT",
+    editorForm:"editForm"
+  },
+  storage:{
+    obsInitials:"lims-keyboard-layer-obs-initials"
+  }
+};
+
+const S=CONFIG.selectors;
+const L=CONFIG.labels;
+const INSTALL_KEY="__limsKeyboardLayer";
+const HELP_ID="lims-keyboard-layer-help";
+
+const leftFrame=()=>document.querySelector("iframe#LeftPanel");
+const leftDoc=()=>leftFrame()?.contentDocument;
+
+const rightFrame=()=>document.querySelector("iframe#RightPanel");
+
+let lastTreeItem=null;
+let lastProblemRow=null;
+let sessionObsInitials=CONFIG.values.defaultObsInitials;
+
+function getObsInitials(){
+  try{
+    return localStorage.getItem(CONFIG.storage.obsInitials)?.trim() ||
+      sessionObsInitials;
+  }catch{
+    return sessionObsInitials;
+  }
+}
+
+function changeObsInitials(){
+  const entered=window.prompt(
+    "Initialer til OBS-listen:",
+    getObsInitials()
+  );
+
+  if(entered===null)return;
+
+  const initials=entered.trim().toUpperCase();
+
+  if(!initials){
+    throw new Error("Initialer må ikke være tomme");
+  }
+
+  if(initials.length>10){
+    throw new Error("Initialer må højst være 10 tegn");
+  }
+
+  sessionObsInitials=initials;
+
+  try{
+    localStorage.setItem(CONFIG.storage.obsInitials,initials);
+  }catch{}
+
+  showNotice(`OBS-initialer er sat til ${initials}`,"success");
+}
+
+function waitUntil(
+  check,
+  description,
+  timeout=CONFIG.timings.timeout,
+  interval=CONFIG.timings.interval
+){
+  return new Promise((resolve,reject)=>{
+    const start=Date.now();
+    let lastError=null;
+
+    const timer=setInterval(()=>{
+      try{
+        const result=check();
+
+        if(result){
+          clearInterval(timer);
+          resolve(result);
+          return;
+        }
+      }catch(err){
+        lastError=err;
+      }
+
+      if(Date.now()-start>timeout){
+        clearInterval(timer);
+        const detail=lastError?.message
+          ? `; last error: ${lastError.message}`
+          : "";
+
+        reject(new Error(
+          `Timeout waiting for ${description}${detail}`
+        ));
+      }
+    },interval);
+  });
+}
+
+function findFrame(win,predicate){
+  try{
+    for(const frame of win.document.querySelectorAll("iframe")){
+      try{
+        if(predicate(frame))return frame;
+      }catch{}
+
+      try{
+        const found=findFrame(frame.contentWindow,predicate);
+        if(found)return found;
+      }catch{}
+    }
+  }catch{}
+
+  return null;
+}
+
+const isVisible=el=>!!el&&el.offsetParent!==null;
+
+function showNotice(message,tone="error"){
+  const id="lims-keyboard-layer-notice";
+  let notice=document.getElementById(id);
+
+  if(!notice){
+    notice=document.createElement("div");
+    notice.id=id;
+    Object.assign(notice.style,{
+      position:"fixed",
+      right:"16px",
+      bottom:"16px",
+      zIndex:"2147483647",
+      maxWidth:"420px",
+      padding:"10px 12px",
+      borderRadius:"4px",
+      color:"white",
+      font:"13px/1.4 sans-serif",
+      boxShadow:"0 2px 8px rgba(0,0,0,.35)"
+    });
+    (document.body||document.documentElement).appendChild(notice);
+  }
+
+  notice.style.background=tone==="error" ? "#8b1e1e" : "#245b35";
+  notice.textContent=message;
+
+  clearTimeout(notice.__limsTimer);
+  notice.__limsTimer=setTimeout(()=>{
+    notice.remove();
+  },CONFIG.timings.notice);
+}
+
+async function activateLeftTab(tabSelector,ready,description){
+  const tab=document.querySelector(tabSelector);
+
+  if(!tab){
+    throw new Error(`Could not find tab ${tabSelector}`);
+  }
+
+  const wasActive=tab.classList.contains("tabDown");
+  const oldDoc=leftDoc();
+
+  if(!wasActive){
+    tab.click();
+  }
+
+  return waitUntil(()=>{
+    const frame=leftFrame();
+    const doc=frame?.contentDocument;
+
+    if(!doc || (!wasActive&&doc===oldDoc))return null;
+
+    return ready ? ready(doc,frame.contentWindow) : doc;
+  },description||`tab ${tabSelector}`);
+}
+
+function activateLeftControl(tabSelector,controlSelector,description){
+  return activateLeftTab(
+    tabSelector,
+    doc=>{
+      const control=doc.querySelector(controlSelector);
+      return isVisible(control) ? control : null;
+    },
+    description||controlSelector
+  );
+}
+
+function getProblemRow(){
+  return rightFrame()?.contentDocument?.querySelector(S.problemRow) || null;
+}
+
+function getProblemRows(){
+  return [
+    ...(rightFrame()?.contentDocument?.querySelectorAll(S.problemRows)||[])
+  ].filter(isVisible);
+}
+
+function focusProblemRow(row){
+  if(!row)return false;
+
+  if(lastProblemRow && lastProblemRow!==row){
+    lastProblemRow.style.outline="";
+    lastProblemRow.style.outlineOffset="";
+  }
+
+  row.tabIndex=-1;
+  row.style.outline="2px solid";
+  row.style.outlineOffset="-2px";
+
+  rightFrame()?.contentWindow?.focus();
+  row.scrollIntoView({block:"nearest"});
+  row.focus();
+
+  lastProblemRow=row;
+  return true;
+}
+
+function activateProblemRow(row){
+  const target=row.matches("[onclick]")
+    ? row
+    : row.querySelector(
+      'td[onclick],a[href],button,input[type="button"],input[type="submit"]'
+    );
+
+  if(!target){
+    showNotice("Could not find clickable patient cell","error");
+    return false;
+  }
+
+  target.click();
+  return true;
+}
+
+function handleProblemKeys(e){
+  if(e.altKey || e.ctrlKey || e.shiftKey || e.metaKey)return false;
+
+  const doc=rightFrame()?.contentDocument;
+  const active=doc?.activeElement;
+
+  if(!active?.matches(S.problemRows))return false;
+
+  if(e.key==="ArrowDown" || e.key==="ArrowUp"){
+    const rows=getProblemRows();
+    const index=rows.indexOf(active);
+
+    if(index===-1)return false;
+
+    const step=e.key==="ArrowDown" ? 1 : -1;
+    const nextIndex=Math.max(
+      0,
+      Math.min(rows.length-1,index+step)
+    );
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    focusProblemRow(rows[nextIndex]);
+    return true;
+  }
+
+  if(e.key!=="Enter" || !activateProblemRow(active))return false;
+
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  return true;
+}
+
+async function openProblemList(){
+  const oldDoc=rightFrame()?.contentDocument || null;
+  const oldRow=getProblemRow();
+  const control=await activateLeftControl(
+    S.tabPatient,
+    S.epjButton,
+    "Problemliste button"
+  );
+
+  control.click();
+
+  const row=await waitUntil(()=>{
+    const doc=rightFrame()?.contentDocument;
+    const current=getProblemRow();
+
+    return (
+      isVisible(current) &&
+      (doc!==oldDoc || current!==oldRow)
+    ) ? current : null;
+  },"fresh Problemliste patient row");
+
+  focusProblemRow(row);
+}
+
+async function expandTreeAll(tabSelector){
+  const treeAll=await activateLeftControl(
+    tabSelector,
+    S.treeAll,
+    "TreeAll button"
+  );
+
+  treeAll.click();
+  return treeAll;
+}
+
+function waitForLeftDocumentReplacement(oldDoc){
+  return waitUntil(()=>{
+    const doc=leftDoc();
+    return doc&&doc!==oldDoc ? doc : null;
+  },"LeftPanel reload");
+}
+
+function getEpjFrame(){
+  return findFrame(
+    window,
+    frame=>frame.id===CONFIG.frames.epjPanel
+  );
+}
+
+function waitForEpjControl(
+  selector,
+  description,
+  differentFrom=null
+){
+  return waitUntil(()=>{
+    const frame=getEpjFrame();
+    const control=frame?.contentDocument?.querySelector(selector);
+
+    return (
+      isVisible(control) &&
+      (!differentFrom || control!==differentFrom)
+    ) ? {frame,control} : null;
+  },description||selector);
+}
+
+async function clickVisibleText(
+  selector,
+  text,
+  getDocument,
+  ancestorSelector=null
+){
+  const element=await waitUntil(()=>{
+    const doc=getDocument();
+
+    return [...(doc?.querySelectorAll(selector)||[])]
+      .find(el=>(
+        isVisible(el) &&
+        el.textContent.trim()===text &&
+        (!ancestorSelector || el.closest(ancestorSelector))
+      )) || null;
+  },`visible text "${text}"`);
+
+  element.scrollIntoView({block:"nearest"});
+  element.click();
+  return element;
+}
+
+function getObsState(){
+  const frame=rightFrame();
+  const doc=frame?.contentDocument;
+
+  const checkboxes=[
+    ...(doc?.querySelectorAll(S.obsCheckbox)||[])
+  ];
+
+  const active=doc?.activeElement;
+  const index=checkboxes.indexOf(active);
+
+  return {
+    frame,
+    doc,
+    checkboxes,
+    active,
+    index
+  };
+}
+
+function waitForObsRefresh(oldCheckbox){
+  return waitUntil(()=>{
+    const {checkboxes}=getObsState();
+
+    return (
+      checkboxes.length &&
+      checkboxes[0]!==oldCheckbox
+    ) ? checkboxes : null;
+  },"Obs-list refresh");
+}
+
+function focusObsCheckbox(checkbox){
+  if(!checkbox)return;
+
+  rightFrame()?.contentWindow?.focus();
+
+  checkbox.scrollIntoView({
+    block:"nearest"
+  });
+
+  checkbox.focus();
+}
+
+function getVisibleTreeItems(){
+  return [...(leftDoc()?.querySelectorAll(S.treeItem)||[])]
+    .filter(isVisible);
+}
+
+function focusTreeItem(item){
+  if(!item)return false;
+
+  if(lastTreeItem && lastTreeItem!==item){
+    lastTreeItem.style.outline="";
+  }
+
+  item.tabIndex=-1;
+  item.style.outline="2px solid";
+
+  leftFrame()?.contentWindow?.focus();
+  item.focus();
+
+  lastTreeItem=item;
+
+  return true;
+}
+
+async function focusFirstSvarItem(){
+  const item=await waitUntil(()=>{
+    return getVisibleTreeItems()[0] || null;
+  },"first visible Svar sample");
+
+  focusTreeItem(item);
+}
+
+async function focusFirstEpjForm(){
+  const item=await waitUntil(()=>{
+    const parents=[...(leftDoc()?.querySelectorAll(S.treeParent)||[])];
+    const forms=parents.find(el=>el.textContent.trim()===L.forms);
+    const row=forms?.closest("tr")?.nextElementSibling;
+    const first=row?.querySelector(S.treeItem);
+
+    return isVisible(first) ? first : null;
+  },`first EPJ item beneath "${L.forms}"`);
+
+  focusTreeItem(item);
+}
+
+function handleTreeKeys(e){
+  if(e.altKey || e.ctrlKey || e.shiftKey || e.metaKey)return false;
+
+  const doc=leftDoc();
+  const active=doc?.activeElement;
+
+  if(!active?.matches(S.treeItem))return false;
+
+  const items=getVisibleTreeItems();
+  const index=items.indexOf(active);
+
+  if(e.key==="ArrowDown"){
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    if(index>=0 && index<items.length-1){
+      focusTreeItem(items[index+1]);
+    }
+
+    return true;
+  }
+
+  if(e.key==="ArrowUp"){
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    if(index>0){
+      focusTreeItem(items[index-1]);
+    }
+
+    return true;
+  }
+
+  if(e.key==="Enter" || e.key===" "){
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    active.click();
+
+    return true;
+  }
+
+  return false;
+}
+
+function handleObsKeys(e){
+  if(e.altKey || e.ctrlKey || e.shiftKey || e.metaKey)return false;
+
+  if(e.key==="ArrowDown"){
+    if(!moveObsFocus(1))return false;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return true;
+  }
+
+  if(e.key==="ArrowUp"){
+    if(!moveObsFocus(-1))return false;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return true;
+  }
+
+  return false;
+}
+
+function waitForUsableEPJ(){
+  return waitUntil(()=>{
+    const frame=getEpjFrame();
+
+    if(frame){
+      const w=frame.contentWindow;
+      const note=frame.contentDocument
+        ?.querySelector(S.epjNote);
+
+      if(
+        note &&
+        typeof w?.enableSave==="function" &&
+        typeof w?.initEditor==="function"
+      ){
+        return {frame,w,note};
+      }
+    }
+
+    return null;
+  },"usable EPJpanel");
+}
+
+function waitForRichFrame(epj){
+  return waitUntil(()=>{
+    const rich=epj.contentDocument
+      ?.querySelector(S.richFrame);
+
+    const doc=rich?.contentDocument;
+    const body=doc?.body;
+
+    if(
+      rich &&
+      body &&
+      (body.isContentEditable || doc.designMode==="on")
+    ){
+      return {rich,doc,body};
+    }
+
+    return null;
+  },"editable richFrame");
+}
+
+function initEditorWhenReady(
+  w,
+  note,
+  timeout=CONFIG.timings.timeout
+){
+  return new Promise((resolve,reject)=>{
+    const start=Date.now();
+
+    const attempt=()=>{
+      try{
+        w.enableSave();
+        w.initEditor(note,CONFIG.values.editorForm);
+        resolve();
+      }catch(err){
+        if(Date.now()-start>timeout){
+          reject(err);
+          return;
+        }
+
+        setTimeout(attempt,100);
+      }
+    };
+
+    setTimeout(attempt,100);
+  });
+}
+
+async function openTabControl(tabSelector,controlSelector){
+  const control=await activateLeftControl(
+    tabSelector,
+    controlSelector
+  );
+
+  control.click();
+}
+
+async function openSvar(){
+  await expandTreeAll(S.tabSvar);
+  await focusFirstSvarItem();
+}
+
+async function openEpjTree(){
+  await expandTreeAll(S.tabEpj);
+  await focusFirstEpjForm();
+}
+
+async function createGreenForm(){
+  await expandTreeAll(S.tabEpj);
+
+  const oldSch=getEpjFrame()
+    ?.contentDocument
+    ?.querySelector(S.formType);
+
+  await clickVisibleText(
+    S.newFormLabel,
+    L.newForm,
+    leftDoc,
+    "table"
+  );
+
+  const {control:sch}=await waitForEpjControl(
+    S.formType,
+    "fresh SCH dropdown",
+    oldSch
+  );
+
+  const option=sch.options[1];
+
+  if(!option || option.textContent.trim()!==L.greenForm){
+    throw new Error(
+      `Second SCH option is not "${L.greenForm}"`
+    );
+  }
+
+  sch.selectedIndex=1;
+  sch.dispatchEvent(new Event("input",{bubbles:true}));
+  sch.dispatchEvent(new Event("change",{bubbles:true}));
+
+  const {control:ok}=await waitForEpjControl(
+    S.formOk,
+    "visible OK button"
+  );
+
+  ok.click();
+}
+
+async function openEpjStatus(){
+  await activateLeftTab(S.tabEpj,null,"EPJ tab");
+
+  const {frame,control}=await waitForEpjControl(
+    S.status,
+    "visible STATUS dropdown"
+  );
+
+  frame.contentWindow.focus();
+  control.focus();
+}
+
+async function openObsList(){
+  const obsButton=await activateLeftControl(
+    S.tabPatient,
+    S.obsList,
+    "Obs-list button"
+  );
+
+  const oldCheckbox=getObsState().checkboxes[0];
+
+  obsButton.click();
+
+  const checkbox=await waitUntil(()=>{
+    const current=getObsState().checkboxes[0];
+
+    return current&&current!==oldCheckbox
+      ? current
+      : null;
+  },"fresh Obs-list checkbox");
+
+  focusObsCheckbox(checkbox);
+}
+
+function moveObsFocus(direction){
+  const {active,checkboxes,index}=getObsState();
+
+  if(!active || !active.matches('input[type="checkbox"]')){
+    return false;
+  }
+
+  if(index===-1)return false;
+
+  const nextIndex=index+direction;
+
+  if(nextIndex<0 || nextIndex>=checkboxes.length){
+    return true;
+  }
+
+  focusObsCheckbox(checkboxes[nextIndex]);
+
+  return true;
+}
+
+async function setMatOnCurrentObsRow(){
+  const {active,checkboxes,index}=getObsState();
+
+  if(!active || !active.matches('input[type="checkbox"]')){
+    throw new Error("No Obs-list checkbox is focused");
+  }
+
+  if(index===-1){
+    throw new Error("Could not determine Obs-list row");
+  }
+
+  const row=active.closest("tr");
+
+  if(!row){
+    throw new Error("Could not find Obs-list row");
+  }
+
+  const fields=[...row.querySelectorAll('input[type="text"]')];
+  const field=fields.at(-1);
+
+  if(!field){
+    throw new Error("Could not find text field in Obs-list row");
+  }
+
+  const oldFirstCheckbox=checkboxes[0];
+
+  field.value=getObsInitials();
+  field.dispatchEvent(new Event("input",{bubbles:true}));
+  field.dispatchEvent(new Event("change",{bubbles:true}));
+
+  const refreshedCheckboxes=await waitForObsRefresh(
+    oldFirstCheckbox
+  );
+
+  const checkbox=refreshedCheckboxes[index];
+
+  if(!checkbox){
+    throw new Error("Obs-list row disappeared after refresh");
+  }
+
+  focusObsCheckbox(checkbox);
+}
+
+async function removeMarkedObs(){
+  const {doc,checkboxes}=getObsState();
+  const button=doc?.querySelector(S.removeMarked);
+
+  if(!button){
+    throw new Error(
+      `Could not find "${L.removeMarked}" button`
+    );
+  }
+
+  const oldFirstCheckbox=checkboxes[0];
+
+  button.click();
+
+  const refreshedCheckboxes=await waitForObsRefresh(
+    oldFirstCheckbox
+  );
+
+  focusObsCheckbox(refreshedCheckboxes[0]);
+}
+
+async function focusActivePatients(){
+  const select=await activateLeftTab(
+    S.tabPatient,
+    doc=>{
+      const control=doc.querySelector(S.activePatients);
+
+      return (
+        isVisible(control) &&
+        control.options.length>0
+      ) ? control : null;
+    },
+    "active patient list"
+  );
+
+  select.selectedIndex=0;
+
+  const win=select.ownerDocument.defaultView;
+  win.focus();
+  select.focus();
+}
+
+async function openNewNote(){
+  const button=await activateLeftControl(
+    S.tabEpj,
+    S.newNote,
+    `"${L.newNote}" button`
+  );
+
+  button.click();
+
+  const {frame:epj,w,note}=await waitForUsableEPJ();
+
+  await new Promise(r=>setTimeout(r,300));
+  await initEditorWhenReady(w,note);
+
+  const {rich,doc,body}=await waitForRichFrame(epj);
+  const win=rich.contentWindow;
+  const html=doc.documentElement;
+
+  epj.focus();
+  epj.contentWindow.focus();
+
+  rich.focus();
+  win.focus();
+  html.focus();
+
+  const range=doc.createRange();
+  range.selectNodeContents(body);
+  range.collapse(false);
+
+  const selection=win.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+async function openMiba(){
+  const win=await activateLeftTab(
+    S.tabSvar,
+    (doc,currentWin)=>(
+      typeof currentWin?.wwSyncSvar==="function"
+        ? currentWin
+        : null
+    ),
+    "wwSyncSvar"
+  );
+
+  const beforeMibaDoc=leftDoc();
+
+  win.wwSyncSvar();
+
+  await waitForLeftDocumentReplacement(
+    beforeMibaDoc
+  );
+
+  const treeLab=await waitUntil(()=>{
+    const control=leftDoc()?.querySelector(S.treeLab);
+    return isVisible(control) ? control : null;
+  },"TreeLab button");
+
+  const beforeTreeLabDoc=leftDoc();
+
+  treeLab.click();
+
+  await waitForLeftDocumentReplacement(
+    beforeTreeLabDoc
+  );
+
+  const treeAll=await waitUntil(()=>{
+    const control=leftDoc()?.querySelector(S.treeAll);
+    return isVisible(control) ? control : null;
+  },"TreeAll button");
+
+  treeAll.click();
+}
+
+function closeShortcutHelp(){
+  document.getElementById(HELP_ID)?.remove();
+}
+
+function toggleShortcutHelp(){
+  const existing=document.getElementById(HELP_ID);
+
+  if(existing){
+    existing.remove();
+    return;
+  }
+
+  const panel=document.createElement("section");
+  panel.id=HELP_ID;
+  panel.tabIndex=-1;
+  panel.setAttribute("role","dialog");
+  panel.setAttribute("aria-labelledby",`${HELP_ID}-title`);
+  Object.assign(panel.style,{
+    position:"fixed",
+    top:"16px",
+    right:"16px",
+    zIndex:"2147483647",
+    width:"min(360px, calc(100vw - 32px))",
+    maxHeight:"calc(100vh - 32px)",
+    overflow:"auto",
+    padding:"14px",
+    border:"1px solid #aaa",
+    borderRadius:"6px",
+    background:"#fff",
+    color:"#222",
+    font:"13px/1.35 sans-serif",
+    boxShadow:"0 4px 18px rgba(0,0,0,.35)"
+  });
+
+  const header=document.createElement("div");
+  Object.assign(header.style,{
+    display:"flex",
+    alignItems:"center",
+    gap:"8px",
+    marginBottom:"2px"
+  });
+
+  const title=document.createElement("strong");
+  title.id=`${HELP_ID}-title`;
+  title.textContent="LIMS-genveje";
+  title.style.fontSize="15px";
+
+  const version=document.createElement("span");
+  version.textContent=`Version ${CONFIG.version}`;
+  version.style.color="#666";
+
+  const initials=document.createElement("span");
+  initials.textContent=`Initialer ${getObsInitials()}`;
+  Object.assign(initials.style,{
+    display:"block",
+    marginBottom:"10px",
+    color:"#666"
+  });
+
+  const close=document.createElement("button");
+  close.type="button";
+  close.textContent="×";
+  close.title="Luk";
+  close.setAttribute("aria-label","Luk genvejslisten");
+  Object.assign(close.style,{
+    marginLeft:"auto",
+    border:"0",
+    background:"transparent",
+    color:"#444",
+    font:"20px/1 sans-serif",
+    cursor:"pointer"
+  });
+  close.addEventListener("click",closeShortcutHelp);
+
+  header.append(title,version,close);
+  panel.appendChild(header);
+  panel.appendChild(initials);
+
+  const table=document.createElement("table");
+  Object.assign(table.style,{
+    width:"100%",
+    borderCollapse:"collapse",
+    font:"inherit"
+  });
+
+  for(const binding of bindings){
+    if(binding.showInHelp===false)continue;
+
+    const {
+      shortcut,
+      helpShortcut=shortcut,
+      title:description,
+      subordinate=false
+    }=binding;
+    const row=document.createElement("tr");
+    const keys=document.createElement("td");
+    const action=document.createElement("td");
+
+    keys.textContent=helpShortcut;
+    action.textContent=description;
+
+    Object.assign(keys.style,{
+      padding:subordinate
+        ? "4px 14px 4px 12px"
+        : "7px 14px 4px 0",
+      whiteSpace:"nowrap",
+      verticalAlign:"top",
+      color:"#111",
+      fontFamily:"monospace",
+      fontWeight:"bold",
+      borderLeft:subordinate
+        ? "2px solid #bbb"
+        : "2px solid transparent"
+    });
+    Object.assign(action.style,{
+      padding:subordinate
+        ? "4px 6px 4px 0"
+        : "7px 0 4px",
+      verticalAlign:"top"
+    });
+
+    if(subordinate){
+      row.style.background="#f5f5f5";
+    }
+
+    row.append(keys,action);
+    table.appendChild(row);
+  }
+
+  panel.appendChild(table);
+
+  const footer=document.createElement("div");
+  footer.textContent="Alt+H eller Esc lukker";
+  Object.assign(footer.style,{
+    marginTop:"10px",
+    paddingTop:"8px",
+    borderTop:"1px solid #ddd",
+    color:"#666",
+    fontSize:"12px"
+  });
+  panel.appendChild(footer);
+
+  (document.body||document.documentElement).appendChild(panel);
+  panel.focus({preventScroll:true});
+}
+
+const bindings=[
+  {
+    key:"1",
+    shift:false,
+    shortcut:"Alt+1",
+    title:"Problemliste",
+    run:openProblemList
+  },
+  {
+    key:"2",
+    shift:false,
+    shortcut:"Alt+2",
+    title:"Obsliste",
+    run:openObsList
+  },
+  {
+    key:"t",
+    shift:false,
+    shortcut:"Alt+T",
+    title:"Tag prøve på OBS liste med dine initialer",
+    subordinate:true,
+    run:setMatOnCurrentObsRow
+  },
+  {
+    key:"t",
+    shift:true,
+    shortcut:"Shift+Alt+T",
+    title:"Skift initialer til OBS liste",
+    subordinate:true,
+    run:changeObsInitials
+  },
+  {
+    key:"x",
+    shift:false,
+    shortcut:"Alt+X",
+    title:"Fjern markerede",
+    subordinate:true,
+    run:removeMarkedObs
+  },
+  {
+    key:"p",
+    shift:false,
+    shortcut:"Alt+P",
+    title:"Patientfane",
+    run:()=>activateLeftTab(S.tabPatient,null,"Patient tab")
+  },
+  {
+    key:"a",
+    shift:false,
+    shortcut:"Alt+A",
+    title:"Aktive patienter",
+    subordinate:true,
+    run:focusActivePatients
+  },
+  {
+    key:"j",
+    shift:false,
+    shortcut:"Alt+J",
+    helpShortcut:"Alt+J / Alt+N",
+    title:"Notater",
+    run:openEpjTree
+  },
+  {
+    key:"n",
+    shift:false,
+    shortcut:"Alt+N",
+    title:"Notater",
+    showInHelp:false,
+    run:openEpjTree
+  },
+  {
+    key:"c",
+    shift:false,
+    shortcut:"Alt+C",
+    title:L.newNote,
+    subordinate:true,
+    run:openNewNote
+  },
+  {
+    key:"c",
+    shift:true,
+    shortcut:"Shift+Alt+C",
+    title:"Nyt grønt skema",
+    subordinate:true,
+    run:createGreenForm
+  },
+  {
+    key:"l",
+    shift:false,
+    shortcut:"Alt+L",
+    title:"Sæt patient på liste",
+    subordinate:true,
+    run:openEpjStatus
+  },
+  {
+    key:"s",
+    shift:false,
+    shortcut:"Alt+S",
+    title:"Svar",
+    run:openSvar
+  },
+  {
+    key:"m",
+    shift:false,
+    shortcut:"Alt+M",
+    title:"MiBa",
+    subordinate:true,
+    run:openMiba
+  },
+  {
+    key:"h",
+    shift:false,
+    shortcut:"Alt+H",
+    title:"Vis genveje",
+    run:toggleShortcutHelp
+  }
+];
+
+function findBinding(e){
+  if(!e.altKey || e.ctrlKey || e.metaKey)return null;
+
+  const key=e.key.toLowerCase();
+
+  return bindings.find(binding=>(
+    binding.key===key &&
+    binding.shift===e.shiftKey
+  )) || null;
+}
+
+async function limsShortcut(e){
+  const binding=findBinding(e);
+  if(!binding)return;
+
+  e.preventDefault();
+  e.stopImmediatePropagation();
+
+  try{
+    await binding.run();
+  }catch(err){
+    const detail=err?.message || String(err);
+    const message=`${binding.shortcut} ${binding.title}: ${detail}`;
+
+    console.error("LIMS shortcut failed:",err);
+    showNotice(message,"error");
+  }
+}
+
+function blockBrokenCtrlArrow(e){
+  if(
+    e.ctrlKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    (e.key==="ArrowLeft" || e.key==="ArrowRight")
+  ){
+    e.stopImmediatePropagation();
+  }
+}
+
+function handleHelpKeys(e){
+  if(
+    e.key!=="Escape" ||
+    e.altKey ||
+    e.ctrlKey ||
+    e.shiftKey ||
+    e.metaKey ||
+    !document.getElementById(HELP_ID)
+  ){
+    return;
+  }
+
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  closeShortcutHelp();
+}
+
+function installIn(win){
+  const existing=win[INSTALL_KEY];
+
+  if(existing?.version===CONFIG.version)return;
+
+  if(typeof existing?.uninstall==="function"){
+    existing.uninstall();
+  }else if(win.__limsKeyboardLayerInstalled===true){
+    throw new Error(
+      "An older keyboard layer is active. Reload the page once, then install this version."
+    );
+  }
+
+  const listeners=[
+    ["keydown",handleHelpKeys,true],
+    ["keydown",blockBrokenCtrlArrow,true],
+    ["keydown",handleProblemKeys,true],
+    ["keydown",handleTreeKeys,true],
+    ["keydown",handleObsKeys,true],
+    ["keydown",limsShortcut,true]
+  ];
+
+  for(const args of listeners){
+    win.addEventListener(...args);
+  }
+
+  const frameListeners=new Map();
+
+  const installFrame=frame=>{
+    if(frameListeners.has(frame))return;
+
+    const onLoad=()=>{
+      try{
+        installIn(frame.contentWindow);
+      }catch(err){
+        console.warn("Could not install LIMS shortcuts in frame:",err);
+      }
+    };
+
+    frame.addEventListener("load",onLoad);
+    frameListeners.set(frame,onLoad);
+    onLoad();
+  };
+
+  const installFramesIn=node=>{
+    if(node?.matches?.("iframe")){
+      installFrame(node);
+    }
+
+    for(const frame of node?.querySelectorAll?.("iframe")||[]){
+      installFrame(frame);
+    }
+  };
+
+  const observer=new win.MutationObserver(mutations=>{
+    for(const mutation of mutations){
+      for(const node of mutation.addedNodes){
+        installFramesIn(node);
+      }
+    }
+  });
+
+  const uninstall=()=>{
+    observer.disconnect();
+
+    if(win===window){
+      closeShortcutHelp();
+    }
+
+    for(const args of listeners){
+      win.removeEventListener(...args);
+    }
+
+    for(const [frame,onLoad] of frameListeners){
+      frame.removeEventListener("load",onLoad);
+
+      try{
+        frame.contentWindow?.[INSTALL_KEY]?.uninstall?.();
+      }catch{}
+    }
+
+    frameListeners.clear();
+
+    if(win[INSTALL_KEY]?.uninstall===uninstall){
+      delete win[INSTALL_KEY];
+    }
+
+    if(win.__limsKeyboardLayerInstalled===CONFIG.version){
+      delete win.__limsKeyboardLayerInstalled;
+    }
+  };
+
+  win[INSTALL_KEY]={
+    version:CONFIG.version,
+    shortcuts:bindings.map(({shortcut,title})=>({shortcut,title})),
+    uninstall
+  };
+  win.__limsKeyboardLayerInstalled=CONFIG.version;
+
+  installFramesIn(win.document);
+  observer.observe(win.document.documentElement,{
+    childList:true,
+    subtree:true
+  });
+
+  if(win===window){
+    showNotice(
+      `LIMS-genveje installeret · v${CONFIG.version} · Initialer ${getObsInitials()} · Alt+H viser genveje`,
+      "success"
+    );
+  }
+}
+
+try{
+  installIn(window);
+}catch(err){
+  console.error("LIMS keyboard layer installation failed:",err);
+  showNotice(err?.message||String(err),"error");
+}
+
+})();
