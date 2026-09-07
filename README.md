@@ -3,40 +3,25 @@ This project contains a a thin javascript layer providing keyboard shortcuts to 
 
 Current shortcuts are:
 
-Alt+1           Problemliste
-
-
-Alt+2           Obsliste
-
-  Alt+T           Tag prøve på OBS liste med dine initialer
-  
-  Shift+Alt+T     Skift initialer til OBS liste
-  
-  Alt+X           Fjern markerede
-
-
-Alt+P           Patientfane
-
-  Alt+A           Aktive patienter
-
-
-Alt+J / Alt+N   Notater
-
-  Alt+C           Nyt notat
-  
-  Shift+Alt+C     Nyt grønt skema
-  
-  Alt+L           Sæt patient på liste
-
-
-Alt+S           Svar
-
-  Alt+M           MiBa
-
-
-Alt+H           Vis genveje
-
-Alt+H eller Esc lukker
+- Alt+1	Problemliste
+- Alt+2	Obsliste
+- Shift+Alt+2	Skift Labafdeling Blod/Andet
+- Alt+T	Tag prøve på OBS liste med dine initialer
+- Shift+Alt+T	Skift gemte initialer
+- Alt+X	Fjern markerede
+- Alt+P	Find patient fane
+- Alt+A	Egen patientliste (dagens patienter)
+- Alt+J / Alt+N	EPN fane
+- Alt+C	Nyt notat
+- Shift+Alt+C	Nyt grønt skema
+- Alt+T	Signer (Tag) notat/skema
+- Alt+L	Sæt patient på liste
+- Alt+S	Vis labsvar fane
+- Alt+M	MiBa
+- Alt+K	Kopiér CPR-nummer
+- Alt+H	Vis genveje
+- Importér/opdatér navneliste (UTF-8 CSV: Navn,Alias. Gemmes i denne browser. Filen sendes ikke til en server.)
+- Alt+H eller Esc lukker
 
 # Installation
 1. Create a bookmark to consume (doesn't matter for what)

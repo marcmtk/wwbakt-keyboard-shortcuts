@@ -1,7 +1,7 @@
 (()=>{
 
 const CONFIG={
-  version:"2026.09.07.5",
+  version:"2026.09.07.7",
   timings:{
     timeout:5000,
     interval:50,
@@ -930,6 +930,47 @@ async function openObsList(){
   focusObsCheckbox(checkbox);
 }
 
+function getObsDepartmentSelector(){
+  const frame=rightFrame();
+  const select=frame?.contentDocument?.querySelector('form[name="listForm"] select[name="avdsel"]');
+  return isVisible(frame)&&isVisible(select) ? select : null;
+}
+
+function nextObsDepartment(current,values){
+  const hasExclude=values.includes("ExcludeAvd");
+  const hasBlood=values.includes("B");
+  if(hasExclude&&hasBlood)return current==="ExcludeAvd" ? "B" : "ExcludeAvd";
+  const only=hasExclude ? "ExcludeAvd" : hasBlood ? "B" : null;
+  return only&&current!==only ? only : "AllAvd";
+}
+
+async function toggleObsDepartment(){
+  if(!getObsDepartmentSelector())await openObsList();
+  const select=await waitUntil(getObsDepartmentSelector,"Obs-list department selector");
+  const target=nextObsDepartment(select.value,[...select.options].map(option=>option.value));
+  if(![...select.options].some(option=>option.value===target)){
+    throw new Error(`Obs-list option ${target} is missing`);
+  }
+  if(select.value===target){
+    focusObsCheckbox(getObsState().checkboxes.find(isVisible));
+    return;
+  }
+  const oldDoc=select.ownerDocument;
+  const oldFirst=getObsState().checkboxes[0];
+  select.value=target;
+  select.dispatchEvent(new oldDoc.defaultView.Event("change",{bubbles:true}));
+  const result=await waitUntil(()=>{
+    const state=getObsState();
+    const current=getObsDepartmentSelector();
+    if(!current||current.value!==target)return null;
+    if(state.doc===oldDoc&&current===select&&state.checkboxes[0]===oldFirst)return null;
+    if(state.doc.readyState==="loading")return null;
+    return {checkbox:state.checkboxes.find(isVisible)};
+  },"Obs-list refresh after department filter");
+  if(result.checkbox)focusObsCheckbox(result.checkbox);
+  else showNotice("Ingen prøver på OBS-listen med dette filter","success");
+}
+
 function moveObsFocus(direction){
   const {active,checkboxes,index}=getObsState();
 
@@ -1454,6 +1495,15 @@ const bindings=[
     run:openObsList
   },
   {
+    key:"2",
+    shift:true,
+    code:"Digit2",
+    shortcut:"Shift+Alt+2",
+    title:"Skift Labafdeling Blod/Andet",
+    subordinate:true,
+    run:toggleObsDepartment
+  },
+  {
     key:"t",
     shift:false,
     shortcut:"Alt+T",
@@ -1583,7 +1633,7 @@ function findBinding(e){
 
   return bindings.find(binding=>(
     !binding.helpOnly &&
-    binding.key===key &&
+    (binding.code ? binding.code===e.code : binding.key===key) &&
     binding.shift===e.shiftKey
   )) || null;
 }
