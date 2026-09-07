@@ -1,7 +1,7 @@
 (()=>{
 
 const CONFIG={
-  version:"2026.09.07.2",
+  version:"2026.09.07.5",
   timings:{
     timeout:5000,
     interval:50,
@@ -1129,6 +1129,19 @@ async function removeMarkedObs(){
   focusObsCheckbox(refreshedCheckboxes[0]);
 }
 
+async function focusPatientSearch(){
+  const input=await activateLeftTab(
+    S.tabPatient,
+    doc=>{
+      const control=doc.querySelector("input#ASKPNR");
+      return isVisible(control)&&!control.disabled ? control : null;
+    },
+    "patient search input #ASKPNR"
+  );
+  input.ownerDocument.defaultView.focus();
+  input.focus();
+}
+
 async function focusActivePatients(){
   const select=await activateLeftTab(
     S.tabPatient,
@@ -1186,7 +1199,38 @@ async function openNewNote(){
   selection.addRange(range);
 }
 
+function findMibaFolder(){
+  return [...(leftDoc()?.querySelectorAll(S.treeParent)||[])]
+    .find(cell=>isVisible(cell)&&cell.textContent.trim()==="KMA SSI") || null;
+}
+
+function firstMibaFolderSample(folder){
+  const row=folder?.closest("tr");
+  for(let sibling=row?.nextElementSibling;sibling;sibling=sibling.nextElementSibling){
+    for(const cell of sibling.querySelectorAll(`${S.treeParent},${S.treeItem}`)){
+      if(cell.matches(S.treeParent))return null;
+      if(isVisible(cell))return cell;
+    }
+  }
+  return null;
+}
+
+async function focusFirstMibaSample(){
+  const folder=await waitUntil(findMibaFolder,"KMA SSI folder");
+  if(!firstMibaFolderSample(folder))folder.click();
+  const sample=await waitUntil(
+    ()=>firstMibaFolderSample(findMibaFolder()),
+    "first visible sample in KMA SSI"
+  );
+  focusTreeItem(sample);
+}
+
 async function openMiba(){
+  if(document.querySelector(S.tabSvar)?.classList.contains("tabDown")&&findMibaFolder()){
+    await focusFirstMibaSample();
+    return;
+  }
+
   const win=await activateLeftTab(
     S.tabSvar,
     (doc,currentWin)=>(
@@ -1218,12 +1262,7 @@ async function openMiba(){
     beforeTreeLabDoc
   );
 
-  const treeAll=await waitUntil(()=>{
-    const control=leftDoc()?.querySelector(S.treeAll);
-    return isVisible(control) ? control : null;
-  },"TreeAll button");
-
-  treeAll.click();
+  await focusFirstMibaSample();
 }
 
 function closeShortcutHelp(){
@@ -1449,7 +1488,7 @@ const bindings=[
     shift:false,
     shortcut:"Alt+P",
     title:"Find patient fane",
-    run:()=>activateLeftTab(S.tabPatient,null,"Patient tab")
+    run:focusPatientSearch
   },
   {
     key:"a",
