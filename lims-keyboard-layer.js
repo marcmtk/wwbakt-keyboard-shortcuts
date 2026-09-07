@@ -1,7 +1,7 @@
 (()=>{
 
 const CONFIG={
-  version:"2026.09.04.18",
+  version:"2026.09.07.2",
   timings:{
     timeout:5000,
     interval:50,
@@ -52,11 +52,11 @@ const CONFIG={
     removeMarked:"Fjern markerede"
   },
   values:{
-    defaultObsInitials:"MAT",
+    defaultInitials:"MAT",
     editorForm:"editForm"
   },
   storage:{
-    obsInitials:"lims-keyboard-layer-obs-initials"
+    initials:"lims-keyboard-layer-obs-initials"
   }
 };
 
@@ -64,6 +64,152 @@ const S=CONFIG.selectors;
 const L=CONFIG.labels;
 const INSTALL_KEY="__limsKeyboardLayer";
 const HELP_ID="lims-keyboard-layer-help";
+const ALIAS_KEY="lims-keyboard-layer-aliases-v1";
+let aliasData=loadAliasData();
+
+function validateAliasRows(rows){
+  const entries=new Map();
+  for(const row of rows){
+    if(!Array.isArray(row)||row.length!==2)throw new Error("CSV skal have to kolonner: alias og name/navn");
+    const [alias,name]=row.map(value=>String(value).trim());
+    if(!alias||!name||alias.length>100||name.length>300)throw new Error("Tomt eller for langt alias/navn");
+    if(entries.has(alias))throw new Error("CSV indeholder dublerede aliaser");
+    entries.set(alias,name);
+  }
+  if(!entries.size)throw new Error("Navnelisten er tom");
+  return [...entries];
+}
+
+function loadAliasData(){
+  try{
+    const data=JSON.parse(localStorage.getItem(ALIAS_KEY));
+    if(!data)return null;
+    return {entries:validateAliasRows(data.entries),date:String(data.date||"")};
+  }catch{
+    return null;
+  }
+}
+
+function parseAliasCsv(text){
+  text=text.replace(/^\uFEFF/,"").replace(/\r\n?/g,"\n");
+  const header=text.split("\n")[0];
+  const delimiter=header.includes(";") ? ";" : ",";
+  const rows=[];
+  let row=[],field="",quoted=false,closed=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(quoted){
+      if(c==='"'&&text[i+1]==='"'){field+='"';i++;}
+      else if(c==='"'){quoted=false;closed=true;}
+      else field+=c;
+    }else if(c===delimiter||c==="\n"){
+      row.push(field);field="";closed=false;
+      if(c==="\n"){
+        if(row.some(value=>value.trim()))rows.push(row);
+        row=[];
+      }
+    }else if(c==='"'&&!field&&!closed){quoted=true;}
+    else{
+      if(closed)throw new Error("Ugyldig CSV efter anførselstegn");
+      field+=c;
+    }
+  }
+  if(quoted)throw new Error("Uafsluttet anførselstegn i CSV");
+  row.push(field);
+  if(row.some(value=>value.trim()))rows.push(row);
+  const columns=rows.shift()?.map(value=>value.trim().toLowerCase());
+  const aliasIndex=columns?.indexOf("alias");
+  const nameIndex=columns?.findIndex(column=>["name","navn"].includes(column));
+  if(columns?.length!==2||aliasIndex<0||nameIndex<0){
+    throw new Error("CSV skal have kolonnerne Navn og Alias");
+  }
+  if(rows.some(row=>row.length!==2))throw new Error("CSV skal have præcis to kolonner");
+  return validateAliasRows(rows.map(row=>[row[aliasIndex],row[nameIndex]]));
+}
+
+function addAliasImport(panel){
+  const section=document.createElement("div");
+  section.style.marginTop="12px";
+  const button=document.createElement("button");
+  button.type="button";
+  button.textContent="Importér/opdatér navneliste";
+  const input=document.createElement("input");
+  input.type="file";
+  input.accept=".csv,text/csv";
+  input.hidden=true;
+  const status=document.createElement("div");
+  const render=()=>{
+    status.textContent=aliasData
+      ? `${aliasData.entries.length} navne · Indlæst ${aliasData.date}`
+      : "Ingen navneliste indlæst";
+  };
+  const hint=document.createElement("div");
+  hint.textContent="UTF-8 CSV: Navn,Alias. Gemmes i denne browser. Filen sendes ikke til en server.";
+  button.onclick=()=>input.click();
+  input.onchange=async()=>{
+    const file=input.files[0];
+    if(!file)return;
+    button.disabled=true;
+    try{
+      if(file.size>1000000)throw new Error("CSV må højst fylde 1 MB");
+      const text=new TextDecoder("utf-8",{fatal:true}).decode(await file.arrayBuffer());
+      const next={entries:parseAliasCsv(text),date:new Date().toLocaleString("da-DK")};
+      localStorage.setItem(ALIAS_KEY,JSON.stringify(next));
+      aliasData=next;
+      rightFrame()?.contentWindow?.[INSTALL_KEY]?.refreshAliases?.();
+      render();
+      showNotice("Navneliste importeret og gemt","success");
+    }catch{
+      showNotice("Import mislykkedes. Kontrollér UTF-8 CSV med Navn,Alias, unikke aliaser og browserens lageradgang. Den tidligere liste er bevaret.","error");
+    }finally{
+      input.value="";
+      button.disabled=false;
+    }
+  };
+  render();
+  section.append(button,input,status,hint);
+  panel.appendChild(section);
+}
+
+function observeAliases(win){
+  if(win.frameElement?.id!=="RightPanel")return {refresh:()=>{},stop:()=>{}};
+  const doc=win.document,changed=new Map();
+  const observer=new win.MutationObserver(()=>refresh());
+  const refresh=()=>{
+    observer.disconnect();
+    const names=new Map(aliasData?.entries||[]);
+    for(const [span,state] of changed){
+      if(!span.isConnected){changed.delete(span);continue;}
+      if(span.textContent!==state.display){changed.delete(span);continue;}
+      span.textContent=state.original;
+      if(state.title===null)span.removeAttribute("title");
+      else span.setAttribute("title",state.title);
+      changed.delete(span);
+    }
+    for(const span of doc.querySelectorAll('form table div[id^="dt-"][id$="-7"] > span')){
+      if(!/^dt-\d+-7$/.test(span.parentElement.id)||span.children.length)continue;
+      if(win.getComputedStyle(span).color!=="rgb(202, 202, 202)")continue;
+      const original=span.textContent,name=names.get(original.trim());
+      if(!name)continue;
+      const title=span.getAttribute("title");
+      changed.set(span,{original,title,display:name});
+      span.textContent=name;
+      span.title=[title,`Alias: ${original.trim()}`].filter(Boolean).join(" · ");
+    }
+    observer.observe(doc.documentElement,{childList:true,subtree:true,characterData:true});
+  };
+  refresh();
+  return {refresh,stop:()=>{
+    observer.disconnect();
+    for(const [span,state] of changed){
+      if(span.textContent!==state.display)continue;
+      span.textContent=state.original;
+      if(state.title===null)span.removeAttribute("title");
+      else span.setAttribute("title",state.title);
+    }
+    changed.clear();
+  }};
+}
 
 const leftFrame=()=>document.querySelector("iframe#LeftPanel");
 const leftDoc=()=>leftFrame()?.contentDocument;
@@ -72,21 +218,21 @@ const rightFrame=()=>document.querySelector("iframe#RightPanel");
 
 let lastTreeItem=null;
 let lastProblemRow=null;
-let sessionObsInitials=CONFIG.values.defaultObsInitials;
+let sessionInitials=CONFIG.values.defaultInitials;
 
-function getObsInitials(){
+function getInitials(){
   try{
-    return localStorage.getItem(CONFIG.storage.obsInitials)?.trim() ||
-      sessionObsInitials;
+    return localStorage.getItem(CONFIG.storage.initials)?.trim() ||
+      sessionInitials;
   }catch{
-    return sessionObsInitials;
+    return sessionInitials;
   }
 }
 
-function changeObsInitials(){
+function changeInitials(){
   const entered=window.prompt(
-    "Initialer til OBS-listen:",
-    getObsInitials()
+    "Gemte initialer:",
+    getInitials()
   );
 
   if(entered===null)return;
@@ -101,13 +247,13 @@ function changeObsInitials(){
     throw new Error("Initialer må højst være 10 tegn");
   }
 
-  sessionObsInitials=initials;
+  sessionInitials=initials;
 
   try{
-    localStorage.setItem(CONFIG.storage.obsInitials,initials);
+    localStorage.setItem(CONFIG.storage.initials,initials);
   }catch{}
 
-  showNotice(`OBS-initialer er sat til ${initials}`,"success");
+  showNotice(`Initialer er sat til ${initials}`,"success");
 }
 
 function waitUntil(
@@ -804,7 +950,7 @@ function moveObsFocus(direction){
   return true;
 }
 
-async function setMatOnCurrentObsRow(){
+async function tagCurrentObsRow(){
   const {active,checkboxes,index}=getObsState();
 
   if(!active || !active.matches('input[type="checkbox"]')){
@@ -830,7 +976,7 @@ async function setMatOnCurrentObsRow(){
 
   const oldFirstCheckbox=checkboxes[0];
 
-  field.value=getObsInitials();
+  field.value=getInitials();
   field.dispatchEvent(new Event("input",{bubbles:true}));
   field.dispatchEvent(new Event("change",{bubbles:true}));
 
@@ -875,7 +1021,7 @@ function isGreenFormContext(e){
 function fillInitialsField(field){
   const doc=field.ownerDocument;
   const win=doc.defaultView;
-  const initials=getObsInitials();
+  const initials=getInitials();
   const valueSetter=Object.getOwnPropertyDescriptor(
     win.HTMLInputElement.prototype,
     "value"
@@ -959,7 +1105,7 @@ async function completeGreenForm(e){
 function runAltT(e){
   if(isRichFrameContext(e))return signActiveNote(e);
   if(isGreenFormContext(e))return completeGreenForm(e);
-  return setMatOnCurrentObsRow();
+  return tagCurrentObsRow();
 }
 
 async function removeMarkedObs(){
@@ -1132,7 +1278,7 @@ function toggleShortcutHelp(){
   version.style.color="#666";
 
   const initials=document.createElement("span");
-  initials.textContent=`Initialer ${getObsInitials()}`;
+  initials.textContent=`Initialer ${getInitials()}`;
   Object.assign(initials.style,{
     display:"block",
     marginBottom:"10px",
@@ -1236,6 +1382,7 @@ function toggleShortcutHelp(){
   }
 
   panel.appendChild(table);
+  addAliasImport(panel);
 
   const footer=document.createElement("div");
   footer.textContent="Alt+H eller Esc lukker";
@@ -1285,9 +1432,9 @@ const bindings=[
     key:"t",
     shift:true,
     shortcut:"Shift+Alt+T",
-    title:"Skift gemte initialer til OBS liste",
+    title:"Skift gemte initialer",
     subordinate:true,
-    run:changeObsInitials
+    run:changeInitials
   },
   {
     key:"x",
@@ -1518,6 +1665,7 @@ function installIn(win,force=false){
 
   const uninstall=()=>{
     observer.disconnect();
+    aliasObserver.stop();
 
     if(win===window){
       closeShortcutHelp();
@@ -1546,7 +1694,9 @@ function installIn(win,force=false){
     }
   };
 
+  const aliasObserver=observeAliases(win);
   win[INSTALL_KEY]={
+    refreshAliases:aliasObserver.refresh,
     version:CONFIG.version,
     document:win.document,
     shortcuts:bindings
@@ -1564,7 +1714,7 @@ function installIn(win,force=false){
 
   if(win===window){
     showNotice(
-      `LIMS-genveje installeret · v${CONFIG.version} · Initialer ${getObsInitials()} · Alt+H viser genveje`,
+      `LIMS-genveje installeret · v${CONFIG.version} · Initialer ${getInitials()} · Alt+H viser genveje`,
       "success"
     );
   }
