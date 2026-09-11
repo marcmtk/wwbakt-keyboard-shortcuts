@@ -1,7 +1,7 @@
 (()=>{
 
 const CONFIG={
-  version:"2026.09.07.7",
+  version:"2026.09.11.2",
   timings:{
     timeout:5000,
     interval:50,
@@ -35,6 +35,8 @@ const CONFIG={
     noteOkActive:"#OKACTIVE",
     greenApproval:"input#K1OK",
     greenSign:"input#K1SIGN",
+    greenApproval2:"input#K2OK",
+    greenSign2:"input#K2SIGN",
     status:"#STATUS",
     formType:"#SCH",
     formOk:"#OK",
@@ -64,6 +66,7 @@ const S=CONFIG.selectors;
 const L=CONFIG.labels;
 const INSTALL_KEY="__limsKeyboardLayer";
 const HELP_ID="lims-keyboard-layer-help";
+const CONTEXT_COPY_ID="lims-keyboard-layer-context-copy";
 const ALIAS_KEY="lims-keyboard-layer-aliases-v1";
 let aliasData=loadAliasData();
 
@@ -392,6 +395,90 @@ async function copyContextText(){
 
   await writeClipboardText(text,doc);
   showNotice("CPR-nummer kopieret","success");
+}
+
+function observeContextCopyButton(win){
+  if(win.frameElement?.id!==CONFIG.frames.context){
+    return {refresh:()=>{},stop:()=>{}};
+  }
+
+  const doc=win.document;
+  let button=null;
+  const observer=new win.MutationObserver(()=>refresh());
+  const refresh=()=>{
+    observer.disconnect();
+    const element=doc.querySelector(S.contextText);
+    const existing=doc.getElementById(CONTEXT_COPY_ID);
+
+    if(existing&&existing.previousElementSibling!==element){
+      existing.remove();
+    }
+
+    if(element&&!doc.getElementById(CONTEXT_COPY_ID)){
+      button=doc.createElement("button");
+      button.id=CONTEXT_COPY_ID;
+      button.type="button";
+      button.title="Kopiér CPR-nummer";
+      button.setAttribute("aria-label","Kopiér CPR-nummer");
+      Object.assign(button.style,{
+        position:"relative",
+        display:"inline-block",
+        width:"20px",
+        height:"20px",
+        marginLeft:"4px",
+        padding:"0",
+        border:"0",
+        background:"transparent",
+        color:"#444",
+        cursor:"pointer",
+        verticalAlign:"middle"
+      });
+
+      const back=doc.createElement("span");
+      const front=doc.createElement("span");
+      for(const sheet of [back,front]){
+        Object.assign(sheet.style,{
+          position:"absolute",
+          width:"8px",
+          height:"10px",
+          border:"1px solid currentColor",
+          borderRadius:"1px",
+          background:"white",
+          boxSizing:"border-box"
+        });
+      }
+      Object.assign(back.style,{left:"5px",top:"4px"});
+      Object.assign(front.style,{left:"8px",top:"7px"});
+      button.append(back,front);
+      button.addEventListener("click",async e=>{
+        e.preventDefault();
+        e.stopPropagation();
+        try{
+          const action=win.top?.[INSTALL_KEY]?.copyContextText;
+          if(typeof action!=="function")throw new Error("Copy action unavailable");
+          await action();
+        }catch(err){
+          console.error("Could not copy CPR number:",err);
+          win.top?.[INSTALL_KEY]?.showNotice?.(
+            err?.message||String(err),
+            "error"
+          );
+        }
+      });
+      element.insertAdjacentElement("afterend",button);
+    }
+
+    observer.observe(doc.documentElement,{
+      childList:true,
+      subtree:true
+    });
+  };
+
+  refresh();
+  return {refresh,stop:()=>{
+    observer.disconnect();
+    button?.remove();
+  }};
 }
 
 async function activateLeftTab(tabSelector,ready,description){
@@ -1109,14 +1196,30 @@ async function signActiveNote(e){
 
 async function completeGreenForm(e){
   const epjWin=e.currentTarget;
-  const approval=epjWin.document.querySelector(S.greenApproval);
+  const doc=epjWin.document;
+  const firstApproval=doc.querySelector(S.greenApproval);
+  const firstSign=doc.querySelector(S.greenSign);
 
-  if(!approval){
+  if(!firstApproval){
     throw new Error("Could not find green-form checkbox #K1OK");
   }
 
+  const secondPart=firstApproval.checked&&!!firstSign?.value.trim();
+  const approvalSelector=secondPart
+    ? S.greenApproval2
+    : S.greenApproval;
+  const signSelector=secondPart
+    ? S.greenSign2
+    : S.greenSign;
+  const part=secondPart ? "K2" : "K1";
+  const approval=doc.querySelector(approvalSelector);
+
+  if(!approval){
+    throw new Error(`Could not find green-form checkbox #${part}OK`);
+  }
+
   if(approval.disabled){
-    throw new Error("Green-form checkbox #K1OK is disabled");
+    throw new Error(`Green-form checkbox #${part}OK is disabled`);
   }
 
   if(!approval.checked){
@@ -1124,9 +1227,9 @@ async function completeGreenForm(e){
   }
 
   const sign=await waitUntil(()=>{
-    const field=epjWin.document.querySelector(S.greenSign);
+    const field=doc.querySelector(signSelector);
     return field&&!field.disabled&&!field.readOnly ? field : null;
-  },"enabled green-form signature field #K1SIGN");
+  },`enabled green-form signature field #${part}SIGN`);
 
   fillInitialsField(sign);
 
@@ -1136,7 +1239,7 @@ async function completeGreenForm(e){
   ));
 
   const ok=await waitUntil(()=>{
-    const control=epjWin.document.querySelector(S.formOk);
+    const control=doc.querySelector(S.formOk);
     return control&&!control.disabled ? control : null;
   },"enabled green-form button #OK");
 
@@ -1755,6 +1858,7 @@ function installIn(win,force=false){
   const uninstall=()=>{
     observer.disconnect();
     aliasObserver.stop();
+    contextCopyObserver.stop();
 
     if(win===window){
       closeShortcutHelp();
@@ -1784,8 +1888,12 @@ function installIn(win,force=false){
   };
 
   const aliasObserver=observeAliases(win);
+  const contextCopyObserver=observeContextCopyButton(win);
   win[INSTALL_KEY]={
     refreshAliases:aliasObserver.refresh,
+    refreshContextCopy:contextCopyObserver.refresh,
+    copyContextText,
+    showNotice,
     version:CONFIG.version,
     document:win.document,
     shortcuts:bindings
