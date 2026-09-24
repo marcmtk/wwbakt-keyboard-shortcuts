@@ -1,7 +1,7 @@
 (()=>{
 
 const CONFIG={
-  version:"2026.09.11.2",
+  version:"2026.09.24.7",
   timings:{
     timeout:5000,
     interval:50,
@@ -25,6 +25,7 @@ const CONFIG={
     treeAll:"input.TreeAll",
     treeItem:"td.TreeUrl",
     treeParent:"td.TreeParent",
+    statusOverview:"td#row2.TreeUrl",
 
     obsCheckbox:'form table tr table tr input[type="checkbox"]',
     removeMarked:'input[value="Fjern markerede"]',
@@ -51,6 +52,8 @@ const CONFIG={
     newForm:"Nyt skema",
     newNote:"Nyt notat",
     greenForm:"Grønt skema",
+    statusFolder:"Status",
+    statusOverview:"Oversigt",
     removeMarked:"Fjern markerede"
   },
   values:{
@@ -66,6 +69,43 @@ const S=CONFIG.selectors;
 const L=CONFIG.labels;
 const INSTALL_KEY="__limsKeyboardLayer";
 const HELP_ID="lims-keyboard-layer-help";
+const COMPACT_HELP_ID="lims-keyboard-layer-compact-help";
+const HELP_STYLES={
+  panel:{
+    border:"1px solid #b8c3cf",
+    borderRadius:"8px",
+    background:"#fff",
+    color:"#263442",
+    font:'12px/1.3 "Segoe UI",Arial,sans-serif',
+    boxShadow:"0 3px 12px #1b2d4226,0 1px 3px #1b2d4214"
+  },
+  keys:{
+    display:"inline-block",
+    flex:"none",
+    padding:"1px 5px",
+    border:"1px solid #ccd5df",
+    borderRadius:"4px",
+    background:"#fff",
+    color:"#30475e",
+    font:'600 11px/18px Consolas,"Courier New",monospace',
+    boxShadow:"0 1px 0 #dce3eb",
+    whiteSpace:"nowrap"
+  },
+  icon:{
+    width:"22px",
+    height:"22px",
+    display:"grid",
+    placeItems:"center",
+    flex:"none",
+    border:"0",
+    borderRadius:"4px",
+    padding:"0",
+    background:"#f3f5f8",
+    color:"#617184",
+    font:'18px/1 "Segoe UI",Arial,sans-serif',
+    cursor:"pointer"
+  }
+};
 const CONTEXT_COPY_ID="lims-keyboard-layer-context-copy";
 const ALIAS_KEY="lims-keyboard-layer-aliases-v1";
 let aliasData=loadAliasData();
@@ -132,10 +172,27 @@ function parseAliasCsv(text){
 
 function addAliasImport(panel){
   const section=document.createElement("div");
-  section.style.marginTop="12px";
+  Object.assign(section.style,{
+    marginTop:"12px",
+    padding:"10px",
+    border:"1px solid #e1e7ee",
+    borderRadius:"5px",
+    background:"#f3f5f8"
+  });
   const button=document.createElement("button");
   button.type="button";
   button.textContent="Importér/opdatér navneliste";
+  Object.assign(button.style,{
+    padding:"5px 9px",
+    marginBottom:"6px",
+    border:"1px solid #ccd5df",
+    borderRadius:"4px",
+    background:"#fff",
+    color:"#30475e",
+    font:"inherit",
+    fontWeight:"600",
+    cursor:"pointer"
+  });
   const input=document.createElement("input");
   input.type="file";
   input.accept=".csv,text/csv";
@@ -148,6 +205,11 @@ function addAliasImport(panel){
   };
   const hint=document.createElement("div");
   hint.textContent="UTF-8 CSV: Navn,Alias. Gemmes i denne browser. Filen sendes ikke til en server.";
+  Object.assign(hint.style,{
+    marginTop:"4px",
+    color:"#617184",
+    lineHeight:"1.4"
+  });
   button.onclick=()=>input.click();
   input.onchange=async()=>{
     const file=input.files[0];
@@ -984,15 +1046,51 @@ async function createGreenForm(){
 }
 
 async function openEpjStatus(){
-  await activateLeftTab(S.tabEpj,null,"EPJ tab");
+  const wasActive=document.querySelector(S.tabEpj)?.classList.contains("tabDown");
+  await activateLeftTab(S.tabEpj,doc=>{
+    const folder=doc.querySelector("td#row1.TreeParent");
+    return folder?.textContent.trim()===L.statusFolder ? folder : null;
+  },"EPJ Status folder");
 
-  const {frame,control}=await waitForEpjControl(
-    S.status,
-    "visible STATUS dropdown"
-  );
+  const isRendered=el=>{
+    if(!el?.isConnected || ![...el.getClientRects()].some(
+      rect=>rect.width>0&&rect.height>0
+    ))return false;
+    return el.ownerDocument.defaultView.getComputedStyle(el).visibility==="visible";
+  };
+  const folder=leftDoc().querySelector("td#row1.TreeParent");
+  const getOverview=()=>{
+    const cell=leftDoc()?.querySelector(S.statusOverview);
+    return cell?.textContent.trim()===L.statusOverview&&isRendered(cell)
+      ? cell : null;
+  };
 
-  frame.contentWindow.focus();
-  control.focus();
+  if(!getOverview()){
+    const expander=folder.closest("tr")?.querySelector("div.TreeOpen")||folder;
+    expander.click();
+  }
+
+  const overview=await waitUntil(getOverview,"visible Status → Oversigt item");
+  const oldStatus=getEpjFrame()?.contentDocument?.querySelector(S.status);
+  let control=wasActive&&isRendered(oldStatus) ? oldStatus : null;
+
+  if(!control){
+    overview.click();
+    control=await waitUntil(()=>{
+      const current=getEpjFrame()?.contentDocument?.querySelector(S.status);
+      return current!==oldStatus&&isRendered(current) ? current : null;
+    },"fresh STATUS dropdown after Oversigt");
+  }
+
+  const value=control.value==="S" ? "P" : "S";
+  if(![...control.options].some(option=>option.value===value)){
+    throw new Error(`STATUS option ${value} is missing`);
+  }
+
+  control.value=value;
+  const EventConstructor=control.ownerDocument.defaultView.Event;
+  control.dispatchEvent(new EventConstructor("input",{bubbles:true}));
+  control.dispatchEvent(new EventConstructor("change",{bubbles:true}));
 }
 
 async function openObsList(){
@@ -1413,6 +1511,117 @@ function closeShortcutHelp(){
   document.getElementById(HELP_ID)?.remove();
 }
 
+function closeCompactHelp(){
+  document.getElementById(COMPACT_HELP_ID)?.remove();
+}
+
+function toggleCompactHelp(){
+  if(document.getElementById(COMPACT_HELP_ID)){
+    closeCompactHelp();
+    return;
+  }
+
+  closeShortcutHelp();
+  document.getElementById("lims-help-preview")?.remove();
+
+  const panel=document.createElement("section");
+  panel.id=COMPACT_HELP_ID;
+  panel.setAttribute("role","region");
+  panel.setAttribute("aria-label","LIMS hurtighjælp");
+  Object.assign(panel.style,HELP_STYLES.panel,{
+    position:"fixed",
+    top:"2px",
+    right:"16px",
+    zIndex:"2147483647",
+    width:"min(900px,calc(100vw - 32px))",
+    height:"80px",
+    boxSizing:"border-box",
+    display:"grid",
+    gridTemplateColumns:"repeat(4,minmax(0,1fr))",
+    gridTemplateRows:"repeat(2,minmax(0,1fr))",
+    gap:"4px 8px",
+    padding:"7px 32px 7px 10px",
+    overflow:"hidden"
+  });
+
+  const compactHints=[
+    {shortcut:"Alt+C"},
+    {shortcut:"Alt+1"},
+    {shortcut:"Alt+2"},
+    {shortcut:"Alt+T",title:"Tag prøve / signér"},
+    {shortcut:"Alt+X"},
+    {shortcut:"Alt+W"},
+    {shortcut:"Shift+Alt+W",display:"Alt+Shift+W"},
+    {shortcut:"Alt+M"}
+  ];
+
+  for(const hint of compactHints){
+    const binding=bindings.find(item=>
+      !item.helpOnly&&item.shortcut===hint.shortcut
+    );
+    if(!binding)throw new Error(`Missing shortcut ${hint.shortcut}`);
+
+    const item=document.createElement("div");
+    const keys=document.createElement("kbd");
+    const label=document.createElement("span");
+    const description=hint.title||binding.title;
+    keys.textContent=hint.display||hint.shortcut;
+    if(hint.shortcut==="Alt+T"){
+      const emphasis=document.createElement("em");
+      emphasis.textContent="Tag";
+      label.append(emphasis,description.slice(3));
+    }else{
+      label.textContent=description;
+    }
+    item.title=`${keys.textContent} · ${description}`;
+    Object.assign(item.style,{
+      display:"flex",
+      alignItems:"center",
+      gap:"8px",
+      minWidth:"0",
+      minHeight:"0",
+      padding:"3px 7px",
+      borderRadius:"5px",
+      background:"#f3f5f8"
+    });
+    Object.assign(keys.style,HELP_STYLES.keys);
+    Object.assign(label.style,{
+      overflow:"hidden",
+      textOverflow:"ellipsis",
+      whiteSpace:"nowrap"
+    });
+    item.append(keys,label);
+    panel.appendChild(item);
+  }
+
+  const close=document.createElement("button");
+  close.type="button";
+  close.textContent="×";
+  close.title="Luk hurtighjælp";
+  close.setAttribute("aria-label","Luk hurtighjælp");
+  Object.assign(close.style,HELP_STYLES.icon,{
+    position:"absolute",
+    top:"7px",
+    right:"5px"
+  });
+  close.addEventListener("click",closeCompactHelp);
+
+  const expand=document.createElement("button");
+  expand.type="button";
+  expand.textContent="↗";
+  expand.title="Vis alle genveje (AltGr+H)";
+  expand.setAttribute("aria-label","Udvid til alle genveje");
+  expand.setAttribute("aria-controls",HELP_ID);
+  Object.assign(expand.style,HELP_STYLES.icon,{
+    position:"absolute",
+    bottom:"7px",
+    right:"5px"
+  });
+  expand.addEventListener("click",toggleShortcutHelp);
+  panel.append(close,expand);
+  (document.body||document.documentElement).appendChild(panel);
+}
+
 function toggleShortcutHelp(){
   const existing=document.getElementById(HELP_ID);
 
@@ -1421,26 +1630,23 @@ function toggleShortcutHelp(){
     return;
   }
 
+  closeCompactHelp();
+
   const panel=document.createElement("section");
   panel.id=HELP_ID;
   panel.tabIndex=-1;
   panel.setAttribute("role","dialog");
   panel.setAttribute("aria-labelledby",`${HELP_ID}-title`);
-  Object.assign(panel.style,{
+  Object.assign(panel.style,HELP_STYLES.panel,{
     position:"fixed",
     top:"16px",
     right:"16px",
     zIndex:"2147483647",
-    width:"min(360px, calc(100vw - 32px))",
+    width:"min(390px, calc(100vw - 32px))",
     maxHeight:"calc(100vh - 32px)",
+    boxSizing:"border-box",
     overflow:"auto",
-    padding:"14px",
-    border:"1px solid #aaa",
-    borderRadius:"6px",
-    background:"#fff",
-    color:"#222",
-    font:"13px/1.35 sans-serif",
-    boxShadow:"0 4px 18px rgba(0,0,0,.35)"
+    padding:"14px"
   });
 
   const header=document.createElement("div");
@@ -1448,7 +1654,7 @@ function toggleShortcutHelp(){
     display:"flex",
     alignItems:"center",
     gap:"8px",
-    marginBottom:"2px"
+    marginBottom:"6px"
   });
 
   const title=document.createElement("strong");
@@ -1458,14 +1664,17 @@ function toggleShortcutHelp(){
 
   const version=document.createElement("span");
   version.textContent=`Version ${CONFIG.version}`;
-  version.style.color="#666";
+  version.style.color="#617184";
 
   const initials=document.createElement("span");
   initials.textContent=`Initialer ${getInitials()}`;
   Object.assign(initials.style,{
-    display:"block",
+    display:"inline-block",
     marginBottom:"10px",
-    color:"#666"
+    padding:"3px 7px",
+    borderRadius:"4px",
+    background:"#f3f5f8",
+    color:"#617184"
   });
 
   const close=document.createElement("button");
@@ -1473,13 +1682,8 @@ function toggleShortcutHelp(){
   close.textContent="×";
   close.title="Luk";
   close.setAttribute("aria-label","Luk genvejslisten");
-  Object.assign(close.style,{
-    marginLeft:"auto",
-    border:"0",
-    background:"transparent",
-    color:"#444",
-    font:"20px/1 sans-serif",
-    cursor:"pointer"
+  Object.assign(close.style,HELP_STYLES.icon,{
+    marginLeft:"auto"
   });
   close.addEventListener("click",closeShortcutHelp);
 
@@ -1505,9 +1709,12 @@ function toggleShortcutHelp(){
     }=binding;
     const row=document.createElement("tr");
     const keys=document.createElement("td");
+    const badge=document.createElement("kbd");
     const action=document.createElement("td");
 
-    keys.textContent=helpShortcut;
+    badge.textContent=helpShortcut;
+    Object.assign(badge.style,HELP_STYLES.keys);
+    keys.appendChild(badge);
 
     const inlineItalicText=binding.inlineItalicText;
     const inlineItalicIndex=inlineItalicText
@@ -1538,26 +1745,24 @@ function toggleShortcutHelp(){
 
     Object.assign(keys.style,{
       padding:subordinate
-        ? "4px 14px 4px 12px"
-        : "7px 14px 4px 0",
+        ? "4px 10px 4px 10px"
+        : "7px 10px 4px 0",
       whiteSpace:"nowrap",
-      verticalAlign:"top",
-      color:"#111",
-      fontFamily:"monospace",
-      fontWeight:"bold",
+      verticalAlign:"middle",
       borderLeft:subordinate
-        ? "2px solid #bbb"
+        ? "2px solid #ccd5df"
         : "2px solid transparent"
     });
     Object.assign(action.style,{
       padding:subordinate
         ? "4px 6px 4px 0"
         : "7px 0 4px",
-      verticalAlign:"top"
+      verticalAlign:"middle",
+      lineHeight:"1.4"
     });
 
     if(subordinate){
-      row.style.background="#f5f5f5";
+      row.style.background="#f3f5f8";
     }
 
     row.append(keys,action);
@@ -1568,12 +1773,12 @@ function toggleShortcutHelp(){
   addAliasImport(panel);
 
   const footer=document.createElement("div");
-  footer.textContent="Alt+H eller Esc lukker";
+  footer.textContent="AltGr+H eller Esc lukker";
   Object.assign(footer.style,{
     marginTop:"10px",
     paddingTop:"8px",
-    borderTop:"1px solid #ddd",
-    color:"#666",
+    borderTop:"1px solid #e1e7ee",
+    color:"#617184",
     fontSize:"12px"
   });
   panel.appendChild(footer);
@@ -1583,6 +1788,13 @@ function toggleShortcutHelp(){
 }
 
 const bindings=[
+  {
+    key:"c",
+    shift:false,
+    shortcut:"Alt+C",
+    title:"Kopiér CPR-nummer",
+    run:copyContextText
+  },
   {
     key:"1",
     shift:false,
@@ -1668,17 +1880,17 @@ const bindings=[
     run:openEpjTree
   },
   {
-    key:"c",
+    key:"w",
     shift:false,
-    shortcut:"Alt+C",
+    shortcut:"Alt+W",
     title:L.newNote,
     subordinate:true,
     run:openNewNote
   },
   {
-    key:"c",
+    key:"w",
     shift:true,
-    shortcut:"Shift+Alt+C",
+    shortcut:"Shift+Alt+W",
     title:"Nyt grønt skema",
     subordinate:true,
     run:createGreenForm
@@ -1691,10 +1903,10 @@ const bindings=[
     subordinate:true
   },
   {
-    key:"l",
+    key:"q",
     shift:false,
-    shortcut:"Alt+L",
-    title:"Sæt patient på liste",
+    shortcut:"Alt+Q",
+    title:"Skift patientliste (Problem/Afsluttet)",
     subordinate:true,
     run:openEpjStatus
   },
@@ -1714,28 +1926,35 @@ const bindings=[
     run:openMiba
   },
   {
-    key:"k",
+    key:"h",
+    code:"KeyH",
     shift:false,
-    shortcut:"Alt+K",
-    title:"Kopiér CPR-nummer",
-    run:copyContextText
+    shortcut:"Alt+H",
+    title:"Vis hurtighjælp",
+    run:toggleCompactHelp
   },
   {
     key:"h",
+    code:"KeyH",
     shift:false,
-    shortcut:"Alt+H",
+    altGraph:true,
+    shortcut:"AltGr+H",
     title:"Vis genveje",
     run:toggleShortcutHelp
   }
 ];
 
 function findBinding(e){
-  if(!e.altKey || e.ctrlKey || e.metaKey)return null;
+  const altGraph=e.getModifierState?.("AltGraph")===true;
+  if(e.metaKey || (!e.altKey&&!altGraph))return null;
 
   const key=e.key.toLowerCase();
 
   return bindings.find(binding=>(
     !binding.helpOnly &&
+    (binding.altGraph
+      ? altGraph
+      : e.altKey&&!e.ctrlKey&&!altGraph) &&
     (binding.code ? binding.code===e.code : binding.key===key) &&
     binding.shift===e.shiftKey
   )) || null;
@@ -1779,7 +1998,8 @@ function handleHelpKeys(e){
     e.ctrlKey ||
     e.shiftKey ||
     e.metaKey ||
-    !document.getElementById(HELP_ID)
+    (!document.getElementById(HELP_ID)&&
+      !document.getElementById(COMPACT_HELP_ID))
   ){
     return;
   }
@@ -1787,6 +2007,7 @@ function handleHelpKeys(e){
   e.preventDefault();
   e.stopImmediatePropagation();
   closeShortcutHelp();
+  closeCompactHelp();
 }
 
 function installIn(win,force=false){
@@ -1862,6 +2083,7 @@ function installIn(win,force=false){
 
     if(win===window){
       closeShortcutHelp();
+      closeCompactHelp();
     }
 
     for(const args of listeners){
@@ -1911,7 +2133,7 @@ function installIn(win,force=false){
 
   if(win===window){
     showNotice(
-      `LIMS-genveje installeret · v${CONFIG.version} · Initialer ${getInitials()} · Alt+H viser genveje`,
+      `LIMS-genveje installeret · v${CONFIG.version} · Initialer ${getInitials()} · Alt+H viser hurtighjælp · AltGr+H viser alle genveje`,
       "success"
     );
   }
